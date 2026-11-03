@@ -1,8 +1,8 @@
-
 import {
   CameraView,
   useCameraPermissions,
 } from 'expo-camera';
+import * as ImageManipulator from 'expo-image-manipulator';
 import { useRouter } from 'expo-router';
 import { useRef, useState } from 'react';
 import {
@@ -18,7 +18,10 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 // Your computer's iPhone hotspot IP address
-const API_URL = 'http://192.168.1.2:3000';
+const API_URL = 'http://192.168.1.6:3000';
+
+// Maximum dimension of the image sent to Muse Spark
+const MAX_IMAGE_DIMENSION = 2048;
 
 export default function CameraScreen() {
   const router = useRouter();
@@ -33,17 +36,82 @@ export default function CameraScreen() {
   const analyzeImage = async () => {
     if (!cameraRef.current || !cameraReady || analyzing) return;
 
+    const totalStartedAt = Date.now();
+
     try {
       setAnalyzing(true);
       setResult('Capturing image...');
 
+      // Step 1: Capture the original camera image
+      const captureStartedAt = Date.now();
+
       const photo = await cameraRef.current.takePictureAsync({
         quality: 0.5,
-        base64: true,
+        base64: false,
       });
 
-      if (!photo?.base64) {
+      console.log(
+        `Photo capture time: ${((Date.now() - captureStartedAt) / 1000).toFixed(2)} seconds`
+      );
+
+      if (!photo?.uri || !photo.width || !photo.height) {
         throw new Error('Could not capture the image.');
+      }
+
+      console.log(
+        `Original image dimensions: ${photo.width} x ${photo.height}`
+      );
+
+      setResult('Preparing image...');
+
+      // Step 2: Resize while preserving the original aspect ratio
+      const resizeStartedAt = Date.now();
+
+      const actions: ImageManipulator.Action[] = [];
+
+      if (
+        photo.width > MAX_IMAGE_DIMENSION ||
+        photo.height > MAX_IMAGE_DIMENSION
+      ) {
+        if (photo.width >= photo.height) {
+          actions.push({
+            resize: {
+              width: MAX_IMAGE_DIMENSION,
+            },
+          });
+        } else {
+          actions.push({
+            resize: {
+              height: MAX_IMAGE_DIMENSION,
+            },
+          });
+        }
+      }
+
+      const resizedImage = await ImageManipulator.manipulateAsync(
+        photo.uri,
+        actions,
+        {
+          compress: 0.75,
+          format: ImageManipulator.SaveFormat.JPEG,
+          base64: true,
+        }
+      );
+
+      console.log(
+        `Image resize and compression time: ${((Date.now() - resizeStartedAt) / 1000).toFixed(2)} seconds`
+      );
+
+      console.log(
+        `Resized dimensions: ${resizedImage.width} x ${resizedImage.height}`
+      );
+
+      console.log(
+        `Resized image size: ${((resizedImage.base64?.length ?? 0) * 0.75 / 1024).toFixed(2)} KB`
+      );
+
+      if (!resizedImage.base64) {
+        throw new Error('Could not prepare the image for analysis.');
       }
 
       setResult('OpenEyes is looking for your object...');
@@ -85,18 +153,42 @@ IMPORTANT RULES:
 Give the most useful answer for the user's request.
       `.trim();
 
+      // Step 3: Prepare and send the resized image
+      const requestBody = JSON.stringify({
+        prompt: accessibilityPrompt,
+        imageDataUrl: `data:image/jpeg;base64,${resizedImage.base64}`,
+      });
+
+      console.log(
+        `Request body size: ${(new Blob([requestBody]).size / 1024).toFixed(2)} KB`
+      );
+
+      const fetchStartedAt = Date.now();
+
       const response = await fetch(`${API_URL}/api/analyze-image`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          prompt: accessibilityPrompt,
-          imageDataUrl: `data:image/jpeg;base64,${photo.base64}`,
-        }),
+        body: requestBody,
       });
 
+      console.log(
+        `Fetch time: ${((Date.now() - fetchStartedAt) / 1000).toFixed(2)} seconds`
+      );
+
+      console.log(`HTTP response status: ${response.status}`);
+
+      const downloadStartedAt = Date.now();
       const data = await response.json();
+
+      console.log(
+        `Response download and JSON parsing: ${((Date.now() - downloadStartedAt) / 1000).toFixed(2)} seconds`
+      );
+
+      console.log(
+        `Total mobile processing time: ${((Date.now() - totalStartedAt) / 1000).toFixed(2)} seconds`
+      );
 
       if (!response.ok) {
         throw new Error(data.error || 'Image analysis failed.');

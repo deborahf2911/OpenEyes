@@ -4,7 +4,8 @@ import {
 } from 'expo-camera';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { useRouter } from 'expo-router';
-import { useRef, useState } from 'react';
+import * as Speech from 'expo-speech';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -17,8 +18,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-// Your computer's iPhone hotspot IP address
-const API_URL = 'http://192.168.1.6:3000';
+// Your computer's local network IP address
+const API_URL = 'http://172.20.10.3:3000';
 
 // Maximum dimension of the image sent to Muse Spark
 const MAX_IMAGE_DIMENSION = 2048;
@@ -30,8 +31,36 @@ export default function CameraScreen() {
   const [prompt, setPrompt] = useState('Help me find my keys.');
   const [result, setResult] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
 
   const cameraRef = useRef<CameraView>(null);
+
+  const stopSpeaking = () => {
+    Speech.stop();
+    setSpeaking(false);
+  };
+
+  const speakResult = (message: string) => {
+    Speech.stop();
+
+    setSpeaking(true);
+
+    Speech.speak(message, {
+      language: 'en-US',
+      rate: 0.95,
+      pitch: 1.0,
+      onDone: () => setSpeaking(false),
+      onStopped: () => setSpeaking(false),
+      onError: () => setSpeaking(false),
+    });
+  };
+
+  // Stop any ongoing speech when leaving the camera screen
+  useEffect(() => {
+    return () => {
+      Speech.stop();
+    };
+  }, []);
 
   const analyzeImage = async () => {
     if (!cameraRef.current || !cameraReady || analyzing) return;
@@ -39,6 +68,8 @@ export default function CameraScreen() {
     const totalStartedAt = Date.now();
 
     try {
+      stopSpeaking();
+
       setAnalyzing(true);
       setResult('Capturing image...');
 
@@ -120,37 +151,68 @@ export default function CameraScreen() {
         prompt.trim() || 'Help me find my keys.';
 
       const accessibilityPrompt = `
-You are OpenEyes, a careful visual assistant designed to help blind
-and low-vision users understand their surroundings and locate objects.
+        You are OpenEyes, a careful visual assistant designed to help blind
+        and low-vision users understand their surroundings and locate objects.
 
-USER REQUEST:
-${userRequest}
+        USER REQUEST:
+        ${userRequest}
 
-YOUR TASK:
-Analyse the attached camera image and respond specifically to the
-user's request.
+        YOUR TASK:
+        Analyse the attached camera image and respond specifically to the
+        user's request.
 
-IMPORTANT RULES:
-1. Focus on the object or information the user is asking about.
-2. Only identify objects that are actually visible in the image.
-3. Never invent objects, locations, colours, or details.
-4. If the requested object is clearly visible, explain where it
-   appears in the image using simple descriptions such as left,
-   right, centre, or near another clearly visible object.
-5. If you are uncertain, say so clearly. Do not pretend to be certain.
-6. If the object is not visible in this image, say that you cannot
-   see it in the current view. Do not claim it is absent from the
-   entire room or surroundings.
-7. If the object is not visible, suggest one simple, cautious next
-   camera movement, such as slowly scanning a nearby surface or
-   pointing the camera slightly downward.
-8. Never give instructions that could put the user in physical danger.
-   Do not tell the user to walk, climb, reach, or move without assistance.
-9. Use short, clear sentences suitable for being read aloud.
-10. Do not use Markdown formatting, headings, or long unnecessary
-    descriptions.
+        IMPORTANT RULES:
+        1. Focus on the object or information the user is asking about.
+        2. Only identify objects that are actually visible in the image.
+        3. Never invent objects, locations, colours, or details.
+        4. Never describe an object's location using image-based terms such as
+          "centre of the image", "middle of the view", "top-left", or
+          "bottom-right".
 
-Give the most useful answer for the user's request.
+          Instead, explain where the object is in the physical scene, using
+          recognisable landmarks and natural directional language.
+
+          When the user asks about something visible, first establish what
+          the camera is facing if that context helps. Then explain where the
+          requested object is relative to the surroundings.
+
+          For example:
+          "Your camera is facing a window with curtains on either side.
+          The window is directly ahead, between the curtains."
+
+          Do not assume the user knows what is visible. Briefly introduce
+          unfamiliar landmarks when useful.
+        5. If you are uncertain, say so clearly. Do not pretend to be certain.
+        6. If the object is not visible in this image, say that you cannot
+          see it in the current view. Do not claim it is absent from the
+          entire room or surroundings.
+        7. If the object is not visible, suggest one simple, cautious next
+          camera movement, such as slowly scanning a nearby surface or
+          pointing the camera slightly downward.
+        8. Never give instructions that could put the user in physical danger.
+          Do not tell the user to walk, climb, reach, or move without assistance.
+        9. Use short, clear sentences suitable for being read aloud.
+        10. Do not use Markdown formatting, headings, or long unnecessary
+            descriptions.
+        11. Speak directly to the user in natural conversational language.
+            Make directions practical and concise, as if guiding someone
+            who cannot see the camera image.
+        12. Never describe an object's location using image-based terms
+            such as "centre of the image", "middle of the view",
+            "top-left", or "bottom-right".
+        13. Instead, explain where the object is in the physical scene,
+            using recognisable landmarks and natural directional language.
+        14. When useful, first explain what the camera is facing.
+            Briefly introduce unfamiliar landmarks so the user can
+            understand the surroundings.
+        15. Then explain where the requested object is relative to
+            those landmarks. For example:
+            "Your camera is facing a window with curtains on either
+            side. The window is directly ahead, between the curtains."
+        16. Only describe details supported by the image. Never invent
+            landmarks or claim to know the user's compass direction.
+
+        Give the most useful answer for the user's request.
       `.trim();
 
       // Step 3: Prepare and send the resized image
@@ -194,7 +256,12 @@ Give the most useful answer for the user's request.
         throw new Error(data.error || 'Image analysis failed.');
       }
 
-      setResult(data.message || 'No response was returned.');
+      const message = data.message || 'No response was returned.';
+
+      setResult(message);
+
+      // Read the AI response aloud
+      speakResult(message);
     } catch (error) {
       console.error('OpenEyes image analysis error:', error);
       setResult('');
@@ -347,6 +414,35 @@ Give the most useful answer for the user's request.
             <Text selectable style={styles.resultText}>
               {result}
             </Text>
+
+            <View style={styles.speechControls}>
+            <Pressable
+              style={styles.speechButton}
+              onPress={() => speakResult(result)}
+              disabled={analyzing || speaking}
+              accessibilityRole="button"
+              accessibilityLabel="Repeat OpenEyes response"
+            >
+              <Text style={styles.speechButtonText}>
+                ↻ Repeat response
+              </Text>
+            </Pressable>
+
+            <Pressable
+              style={[
+                styles.speechButton,
+                !speaking && styles.disabledButton,
+              ]}
+              onPress={stopSpeaking}
+              disabled={!speaking}
+              accessibilityRole="button"
+              accessibilityLabel="Stop speaking"
+            >
+              <Text style={styles.speechButtonText}>
+                ■ Stop speaking
+              </Text>
+            </Pressable>
+          </View>
           </View>
         )}
       </ScrollView>
@@ -486,5 +582,27 @@ const styles = StyleSheet.create({
   backButton: {
     padding: 16,
     marginTop: 8,
+  },
+  speechControls: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 16,
+  },
+
+  speechButton: {
+    flex: 1,
+    minHeight: 46,
+    paddingHorizontal: 10,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: '#E5F3F4',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  speechButtonText: {
+    color: '#087E8B',
+    fontSize: 13,
+    fontWeight: '700',
   },
 });

@@ -8,7 +8,11 @@
     "scheme": "openeyes",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/expo.icon",
+      "infoPlist": {
+        "NSCameraUsageDescription": "OpenEyes uses the camera to describe your surroundings and help you find objects.",
+        "NSMicrophoneUsageDescription": "OpenEyes uses the microphone to listen to your voice instructions."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -31,13 +35,6 @@
           "backgroundColor": "#208AEF",
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
-        }
-      ],
-      [
-        "expo-speech-recognition",
-        {
-          "microphonePermission": "Allow OpenEyes to use the microphone for voice prompts.",
-          "speechRecognitionPermission": "Allow OpenEyes to transcribe your voice prompts."
         }
       ],
       "expo-audio",

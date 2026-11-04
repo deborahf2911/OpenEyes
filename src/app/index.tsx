@@ -1,7 +1,10 @@
-
+import { requestRecordingPermissionsAsync } from 'expo-audio';
+import { useCameraPermissions } from 'expo-camera';
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import * as Speech from 'expo-speech';
+import { useEffect, useState } from 'react';
 import {
+  AccessibilityInfo,
   Alert,
   Pressable,
   ScrollView,
@@ -14,19 +17,124 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 export default function HomeScreen() {
   const router = useRouter();
 
-  const [message, setMessage] = useState(
-    'Your visual assistant is ready to get started.'
-  );
+  const [cameraPermission, requestCameraPermission] =
+    useCameraPermissions();
 
-  function handleDescribe() {
-    router.push('/camera');
+  const [isStarting, setIsStarting] = useState(false);
+
+  const [isScreenReaderEnabled, setIsScreenReaderEnabled] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+
+    AccessibilityInfo.isScreenReaderEnabled().then((enabled) => {
+      if (mounted) {
+        setIsScreenReaderEnabled(enabled);
+      }
+    });
+
+    const subscription = AccessibilityInfo.addEventListener(
+      'screenReaderChanged',
+      setIsScreenReaderEnabled
+    );
+
+    return () => {
+      mounted = false;
+      subscription.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      Speech.speak(
+        "Hello! I'm OpenEyes, your visual assistant. I can help you find everyday objects and understand what's around you. To get started, I'll need access to your camera and microphone. Let's get started.",
+        {
+          language: 'en-US',
+          rate: 0.85,
+          pitch: 1.1,
+          volume: 1.0,
+          onDone: () => {
+            if (isScreenReaderEnabled) {
+              AccessibilityInfo.announceForAccessibility(
+                'Welcome to OpenEyes. Explore the screen to get started.'
+              );
+            }
+          },
+        }
+      );
+    }, isScreenReaderEnabled ? 1500 : 1000);
+
+    return () => {
+      clearTimeout(timer);
+      Speech.stop();
+    };
+  }, [isScreenReaderEnabled]);
+
+  function speakAndWait(message: string): Promise<void> {
+    return new Promise((resolve) => {
+      Speech.speak(message, {
+        language: 'en-US',
+        rate: 0.85,
+        pitch: 1.1,
+        volume: 1.0,
+        onDone: resolve,
+        onStopped: resolve,
+        onError: () => resolve(),
+      });
+    });
   }
 
-  function handleQuestion() {
-    Alert.alert(
-      'Ask OpenEyes',
-      'Conversational questions will be available once we connect the camera and AI.'
-    );
+  async function handleDescribe() {
+    if (isStarting) return;
+
+    setIsStarting(true);
+    Speech.stop();
+
+    try {
+      if (!isScreenReaderEnabled) {
+        await speakAndWait(
+          'To help you understand your surroundings, OpenEyes needs access to your camera. Please allow camera access when the permission request appears.'
+        );
+      }
+
+      let cameraGranted = cameraPermission?.granted;
+
+      if (!cameraGranted) {
+        const result = await requestCameraPermission();
+        cameraGranted = result.granted;
+      }
+
+      if (!cameraGranted) {
+        Alert.alert(
+          'Camera access needed',
+          'Please enable camera access in your iPhone Settings to use OpenEyes.'
+        );
+        return;
+      }
+
+      if (!isScreenReaderEnabled) {
+        await speakAndWait(
+          'Thank you. OpenEyes also needs microphone access so you can give voice instructions. Please allow microphone access when asked.'
+        );
+      }
+
+      const microphoneResult = await requestRecordingPermissionsAsync();
+
+      if (!microphoneResult.granted) {
+        Alert.alert(
+          'Microphone access needed',
+          'Please enable microphone access in your iPhone Settings to use voice instructions.'
+        );
+        return;
+      }
+
+      router.push('/camera');
+    } catch (error) {
+      console.error('Permission setup error:', error);
+      Alert.alert('Something went wrong', 'Please try again.');
+    } finally {
+      setIsStarting(false);
+    }
   }
 
   return (
@@ -56,7 +164,7 @@ export default function HomeScreen() {
           </Text>
 
           <Text style={styles.description}>
-            Discover what's in front of you with an assistant designed to
+            Discover what&apos;s in front of you with an assistant designed to
             make everyday moments easier.
           </Text>
         </View>
@@ -67,6 +175,7 @@ export default function HomeScreen() {
             pressed && styles.buttonPressed,
           ]}
           onPress={handleDescribe}
+          disabled={isStarting}
           accessibilityRole="button"
           accessibilityLabel="Describe what I see"
           accessibilityHint="Starts the visual description experience"
@@ -84,46 +193,6 @@ export default function HomeScreen() {
             →
           </Text>
         </Pressable>
-
-        <Pressable
-          style={({ pressed }) => [
-            styles.secondaryButton,
-            pressed && styles.buttonPressed,
-          ]}
-          onPress={handleQuestion}
-          accessibilityRole="button"
-          accessibilityLabel="Ask a question"
-          accessibilityHint="Learn about asking OpenEyes questions"
-        >
-          <Text style={styles.questionIcon} accessible={false}>
-            ?
-          </Text>
-          <Text style={styles.secondaryTitle}>Ask a question</Text>
-          <Text style={styles.secondaryArrow} accessible={false}>
-            →
-          </Text>
-        </Pressable>
-
-        <Pressable
-          style={styles.micTestButton}
-          onPress={() => router.push('/mic-test')}
-          accessibilityRole="button"
-          accessibilityLabel="Microphone test"
-        >
-          <Text style={styles.micTestText}>🎙 Microphone Test (Development)</Text>
-        </Pressable>
-
-        <View
-          style={styles.statusCard}
-          accessible
-          accessibilityLabel={`Development status. ${message}`}
-        >
-          <View style={styles.statusDot} />
-          <View style={styles.statusContent}>
-            <Text style={styles.statusTitle}>A little progress, every day</Text>
-            <Text style={styles.statusMessage}>{message}</Text>
-          </View>
-        </View>
 
         <View style={styles.footer}>
           <Text style={styles.footerText}>
@@ -246,69 +315,6 @@ const styles = StyleSheet.create({
     fontSize: 25,
     marginLeft: 8,
   },
-  secondaryButton: {
-    minHeight: 68,
-    backgroundColor: '#FFFFFF',
-    borderColor: '#D9E3EB',
-    borderWidth: 1,
-    borderRadius: 18,
-    paddingHorizontal: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 26,
-  },
-  questionIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 12,
-    backgroundColor: '#E8F3F6',
-    color: '#123B56',
-    fontSize: 22,
-    fontWeight: '700',
-    textAlign: 'center',
-    textAlignVertical: 'center',
-    lineHeight: 36,
-  },
-  secondaryTitle: {
-    color: '#123B56',
-    fontSize: 16,
-    fontWeight: '700',
-    marginLeft: 13,
-    flex: 1,
-  },
-  secondaryArrow: {
-    color: '#087E8B',
-    fontSize: 23,
-  },
-  statusCard: {
-    backgroundColor: '#EAF1F6',
-    borderRadius: 18,
-    padding: 18,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-  },
-  statusDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: '#087E8B',
-    marginTop: 5,
-    marginRight: 12,
-  },
-  statusContent: {
-    flex: 1,
-  },
-  statusTitle: {
-    color: '#123B56',
-    fontSize: 14,
-    fontWeight: '800',
-    marginBottom: 7,
-  },
-  statusMessage: {
-    color: '#40576A',
-    fontSize: 13,
-    lineHeight: 20,
-  },
   footer: {
     marginTop: 28,
     alignItems: 'center',
@@ -319,18 +325,5 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 1,
     textAlign: 'center',
-  },
-  micTestButton: {
-    padding: 15,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#087E8B',
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  micTestText: {
-    color: '#087E8B',
-    fontSize: 14,
-    fontWeight: '700',
   },
 });

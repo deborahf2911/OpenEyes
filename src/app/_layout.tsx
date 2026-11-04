@@ -14,9 +14,7 @@ export default function RootLayout() {
       <AnimatedSplashOverlay />
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="index" />
-        <Stack.Screen name="explore" />
         <Stack.Screen name="camera" />
-        <Stack.Screen name="mic-test" />
       </Stack>
     </ThemeProvider>
   );

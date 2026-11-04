@@ -597,54 +597,8 @@ voiceServer.on("connection", (mobileSocket) => {
     "wss://api.meta.ai/v1/asr/realtime"
   );
 
-  let handshakeComplete = false;
-
-  let audioQueue: Buffer[] = [];
-  let queuedAudioBytes = 0;
-  let audioPacingTimer: NodeJS.Timeout | null = null;
-  let lastForwardAt: number | null = null;
-
-  const AUDIO_FRAME_INTERVAL_MS = 90;
-  const MAX_QUEUED_AUDIO_BYTES = 48000 * 3;
-
-  audioPacingTimer = setInterval(() => {
-    if (
-      !handshakeComplete ||
-      metaSocket.readyState !== WebSocket.OPEN ||
-      audioQueue.length === 0
-    ) {
-      return;
-    }
-
-    const audioData = audioQueue.shift()!;
-
-    const now = Date.now();
-    const forwardInterval =
-      lastForwardAt === null ? null : now - lastForwardAt;
-
-    lastForwardAt = now;
-
-    if (forwardedAudioFrames % 10 === 0) {
-      console.log("Meta send timing:", {
-        frameBytes: audioData.byteLength,
-        intervalMs: forwardInterval,
-        queuedFrames: audioQueue.length,
-        metaBufferedAmount: metaSocket.bufferedAmount,
-      });
-    }
-
-    queuedAudioBytes -= audioData.byteLength;
-
-    metaSocket.send(audioData, (error) => {
-      if (error) {
-        console.error("Audio forwarding failed:", error);
-        return;
-      }
-
-      forwardedAudioFrames++;
-      forwardedAudioBytes += audioData.byteLength;
-    });
-  }, AUDIO_FRAME_INTERVAL_MS);
+    let handshakeComplete = false;
+    let lastForwardAt: number | null = null;
 
   metaSocket.on("open", () => {
     console.log("Connected to Meta voice service.");
@@ -730,9 +684,13 @@ voiceServer.on("connection", (mobileSocket) => {
       receivedAudioFrames++;
       receivedAudioBytes += audioData.byteLength;
 
-      const interval = lastAudioFrameAt === null
+      const receiveInterval = lastAudioFrameAt === null
         ? null
         : now - lastAudioFrameAt;
+
+      const forwardInterval = lastForwardAt === null
+        ? null
+        : now - lastForwardAt;
 
       lastAudioFrameAt = now;
 
@@ -740,50 +698,45 @@ voiceServer.on("connection", (mobileSocket) => {
         firstAudioFrameAt = now;
       }
 
-      let queued = false;
-
       if (
-        metaSocket.readyState === WebSocket.OPEN &&
-        handshakeComplete &&
-        queuedAudioBytes + audioData.byteLength <= MAX_QUEUED_AUDIO_BYTES
+        metaSocket.readyState !== WebSocket.OPEN ||
+        !handshakeComplete
       ) {
-        audioQueue.push(audioData);
-        queuedAudioBytes += audioData.byteLength;
-        queued = true;
+        console.warn("Audio frame received before Meta was ready.");
+        return;
       }
 
-      if (
-        queuedAudioBytes + audioData.byteLength > MAX_QUEUED_AUDIO_BYTES
-      ) {
-        console.warn("Audio queue limit reached. Dropping incoming frame.");
-      }
+      lastForwardAt = now;
+
+      metaSocket.send(audioData, (error) => {
+        if (error) {
+          console.error("Audio forwarding failed:", error);
+          return;
+        }
+
+        forwardedAudioFrames++;
+        forwardedAudioBytes += audioData.byteLength;
+      });
 
       if (receivedAudioFrames % 10 === 0) {
         const elapsedSeconds =
           (now - firstAudioFrameAt) / 1000;
 
-        console.log("Audio pacing diagnostics:", {
+        console.log("Audio forwarding diagnostics:", {
           receivedFrames: receivedAudioFrames,
+          forwardedFrames: forwardedAudioFrames,
           receivedKB: Number(
             (receivedAudioBytes / 1024).toFixed(2)
           ),
-          forwardedFrames: forwardedAudioFrames,
           forwardedKB: Number(
             (forwardedAudioBytes / 1024).toFixed(2)
           ),
-          queuedFrames: audioQueue.length,
-          queuedKB: Number(
-            (queuedAudioBytes / 1024).toFixed(2)
-          ),
-          lastFrameIntervalMs: interval,
+          receiveIntervalMs: receiveInterval,
+          forwardIntervalMs: forwardInterval,
           receivedBytesPerSecond: elapsedSeconds > 0
             ? Math.round(receivedAudioBytes / elapsedSeconds)
             : 0,
-          forwardedBytesPerSecond: elapsedSeconds > 0
-            ? Math.round(forwardedAudioBytes / elapsedSeconds)
-            : 0,
           metaBufferedAmount: metaSocket.bufferedAmount,
-          currentFrameQueued: queued,
         });
       }
 
@@ -832,14 +785,6 @@ voiceServer.on("connection", (mobileSocket) => {
   mobileSocket.on("close", () => {
     console.log("Mobile voice connection closed.");
 
-    if (audioPacingTimer) {
-      clearInterval(audioPacingTimer);
-      audioPacingTimer = null;
-    }
-
-    audioQueue = [];
-    queuedAudioBytes = 0;
-
     if (
       metaSocket.readyState === WebSocket.OPEN ||
       metaSocket.readyState === WebSocket.CONNECTING
@@ -852,14 +797,6 @@ voiceServer.on("connection", (mobileSocket) => {
     console.log(
       `Meta voice connection closed: ${code} ${reason.toString()}`
     );
-
-    if (audioPacingTimer) {
-      clearInterval(audioPacingTimer);
-      audioPacingTimer = null;
-    }
-
-    audioQueue = [];
-    queuedAudioBytes = 0;
 
     if (mobileSocket.readyState === WebSocket.OPEN) {
       mobileSocket.close(code === 1000 ? 1000 : 1011);

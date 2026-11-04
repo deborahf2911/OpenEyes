@@ -10,6 +10,7 @@ import {
 import * as ImageManipulator from 'expo-image-manipulator';
 import { useRouter } from 'expo-router';
 import * as Speech from 'expo-speech';
+import type { ComponentRef } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -19,16 +20,16 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  View,
+  View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 // Your computer's local network IP address
-const API_URL = 'http://192.168.1.2:3000';
+const API_URL = 'http://172.20.10.3:3000';
 
 // Maximum dimension of the image sent to Muse Spark
 const MAX_IMAGE_DIMENSION = 1600;
-const VOICE_WS_URL = 'ws://192.168.1.2:3000/api/voice';
+const VOICE_WS_URL = 'ws://172.20.10.3:3000/api/voice';
 
 export default function CameraScreen() {
   const router = useRouter();
@@ -49,6 +50,15 @@ export default function CameraScreen() {
   const lastAudioBufferAtRef = useRef<number | null>(null);
   const audioBufferCountRef = useRef(0);
   const hasWelcomedRef = useRef(false);
+  const listeningPromptRef = useRef<ComponentRef<typeof Text>>(null);
+
+  const speakResultRef = useRef<
+    ((message: string, onFinished?: () => void) => Promise<void>) | null
+  >(null);
+
+  const analyzeImageRef = useRef<
+    ((voiceRequest?: string) => Promise<void>) | null
+  >(null);
 
   const handleAudioBuffer = useCallback((buffer: { data: ArrayBuffer }) => {
     const now = Date.now();
@@ -83,7 +93,7 @@ export default function CameraScreen() {
     }
   }, []);
 
-  const { stream, isStreaming } = useAudioStream({
+  const { stream } = useAudioStream({
     sampleRate: 24000,
     channels: 1,
     encoding: 'int16',
@@ -126,26 +136,29 @@ export default function CameraScreen() {
 
             metaReadyRef.current = true;
 
-            await setAudioModeAsync({
-              allowsRecording: true,
-              playsInSilentMode: true,
-            });
-
-            await stream.start();
-
             if (!hasWelcomedRef.current) {
               hasWelcomedRef.current = true;
 
-              speakResult(
-                "Hello! I'm OpenEyes. I'm listening. What are you looking for?",
+              speakResultRef.current?.(
+                "I'm listening. What are you looking for?",
                 () => {
-                  if (metaReadyRef.current && voiceSocketRef.current?.readyState === WebSocket.OPEN) {
+                  if (
+                    metaReadyRef.current &&
+                    voiceSocketRef.current?.readyState === WebSocket.OPEN
+                  ) {
                     sendRealAudioRef.current = true;
                     console.log('OpenEyes is listening for your instruction.');
                   }
                 }
               );
             } else {
+              await setAudioModeAsync({
+                allowsRecording: true,
+                playsInSilentMode: true,
+              });
+
+              await stream.start();
+
               sendRealAudioRef.current = true;
               console.log('OpenEyes is listening for your instruction.');
             }
@@ -175,7 +188,7 @@ export default function CameraScreen() {
             setPrompt(transcript);
 
             sendRealAudioRef.current = false;
-            analyzeImage(transcript);
+            void analyzeImageRef.current?.(transcript);
           }
         } catch (error) {
           console.error('Voice message handling error:', error);
@@ -257,6 +270,7 @@ export default function CameraScreen() {
       await setAudioModeAsync({
         allowsRecording: false,
         playsInSilentMode: true,
+        interruptionMode: 'doNotMix',
       });
 
       setSpeaking(true);
@@ -561,6 +575,11 @@ export default function CameraScreen() {
     }
   };
 
+  useEffect(() => {
+    speakResultRef.current = speakResult;
+    analyzeImageRef.current = analyzeImage;
+  });
+
   if (!permission) {
     return (
       <SafeAreaView style={styles.center}>
@@ -621,7 +640,13 @@ export default function CameraScreen() {
           <Text style={styles.backText}>‹ Back</Text>
         </Pressable>
 
-        <Text style={styles.headerTitle}>Look around</Text>
+        <Text
+          style={styles.headerTitle}
+          accessibilityRole="header"
+          accessibilityLabel="Look around"
+        >
+          Look around
+        </Text>
 
         <View style={styles.headerSpacer} />
       </View>
@@ -652,7 +677,12 @@ export default function CameraScreen() {
         showsVerticalScrollIndicator
         keyboardShouldPersistTaps="handled"
       >
-        <Text style={styles.title}>
+        <Text
+          ref={listeningPromptRef}
+          style={styles.title}
+          accessibilityRole="header"
+          accessibilityLabel="I'm listening. What are you looking for?"
+        >
           What are you looking for?
         </Text>
 

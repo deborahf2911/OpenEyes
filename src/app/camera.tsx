@@ -1,11 +1,16 @@
 import {
+  requestRecordingPermissionsAsync,
+  setAudioModeAsync,
+  useAudioStream,
+} from 'expo-audio';
+import {
   CameraView,
   useCameraPermissions,
 } from 'expo-camera';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { useRouter } from 'expo-router';
 import * as Speech from 'expo-speech';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -19,10 +24,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 // Your computer's local network IP address
-const API_URL = 'http://172.20.10.3:3000';
+const API_URL = 'http://192.168.1.2:3000';
 
 // Maximum dimension of the image sent to Muse Spark
-const MAX_IMAGE_DIMENSION = 2048;
+const MAX_IMAGE_DIMENSION = 1600;
+const VOICE_WS_URL = 'ws://192.168.1.2:3000/api/voice';
 
 export default function CameraScreen() {
   const router = useRouter();
@@ -34,38 +40,308 @@ export default function CameraScreen() {
   const [speaking, setSpeaking] = useState(false);
 
   const cameraRef = useRef<CameraView>(null);
+  const cameraReadyRef = useRef(false);
+  const voiceSocketRef = useRef<WebSocket | null>(null);
+  const metaReadyRef = useRef(false);
+  const sendRealAudioRef = useRef(false);
+  const analyzingRef = useRef(false);
+  const speechRestoreRef = useRef(false);
+  const lastAudioBufferAtRef = useRef<number | null>(null);
+  const audioBufferCountRef = useRef(0);
+  const hasWelcomedRef = useRef(false);
+
+  const handleAudioBuffer = useCallback((buffer: { data: ArrayBuffer }) => {
+    const now = Date.now();
+    const previous = lastAudioBufferAtRef.current;
+
+    lastAudioBufferAtRef.current = now;
+    audioBufferCountRef.current += 1;
+
+    if (audioBufferCountRef.current % 10 === 0 && previous !== null) {
+      console.log(
+        'Audio timing:',
+        now - previous,
+        'ms since previous buffer; socket:',
+        voiceSocketRef.current?.readyState,
+        'Meta ready:',
+        metaReadyRef.current,
+        'Sending real audio:',
+        sendRealAudioRef.current
+      );
+    }
+
+    const socket = voiceSocketRef.current;
+
+    if (!metaReadyRef.current || socket?.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    if (sendRealAudioRef.current) {
+      socket.send(buffer.data);
+    } else {
+      socket.send(new ArrayBuffer(buffer.data.byteLength));
+    }
+  }, []);
+
+  const { stream, isStreaming } = useAudioStream({
+    sampleRate: 24000,
+    channels: 1,
+    encoding: 'int16',
+    onBuffer: handleAudioBuffer,
+  });
+
+  const startVoiceSession = useCallback(async () => {
+    try {
+      if (
+        voiceSocketRef.current &&
+        (voiceSocketRef.current.readyState === WebSocket.CONNECTING ||
+          voiceSocketRef.current.readyState === WebSocket.OPEN)
+      ) {
+        console.log('A voice session is already connecting or active.');
+        return;
+      }
+      const permission = await requestRecordingPermissionsAsync();
+
+      if (!permission.granted) {
+        Alert.alert(
+          'Microphone permission required',
+          'Allow microphone access to use OpenEyes hands-free.',
+        );
+        return;
+      }
+
+      const socket = new WebSocket(VOICE_WS_URL);
+      voiceSocketRef.current = socket;
+
+      socket.onopen = () => {
+        console.log('Connected to OpenEyes voice backend.');
+      };
+
+      socket.onmessage = async (event) => {
+        try {
+          const message = JSON.parse(event.data);
+
+          if (message.type === 'ready') {
+            console.log('Meta voice session ready:', message.sessionId);
+
+            metaReadyRef.current = true;
+
+            await setAudioModeAsync({
+              allowsRecording: true,
+              playsInSilentMode: true,
+            });
+
+            await stream.start();
+
+            if (!hasWelcomedRef.current) {
+              hasWelcomedRef.current = true;
+
+              speakResult(
+                "Hello! I'm OpenEyes. I'm listening. What are you looking for?",
+                () => {
+                  if (metaReadyRef.current && voiceSocketRef.current?.readyState === WebSocket.OPEN) {
+                    sendRealAudioRef.current = true;
+                    console.log('OpenEyes is listening for your instruction.');
+                  }
+                }
+              );
+            } else {
+              sendRealAudioRef.current = true;
+              console.log('OpenEyes is listening for your instruction.');
+            }
+          }
+
+          if (message.type === 'transcript') {
+            const transcript = String(
+              message.transcript ?? message.text ?? ''
+            );
+
+            console.log('Voice transcript:', transcript);
+
+            // Display the live voice transcription in the text box.
+            setPrompt(transcript);
+          }
+
+          if (message.type === 'speechComplete') {
+            const transcript = String(
+              message.transcript ?? message.text ?? ''
+            ).trim();
+
+            console.log('Completed voice instruction:', transcript);
+
+            if (!transcript || analyzingRef.current) return;
+
+            // Keep the final recognised instruction in the text box.
+            setPrompt(transcript);
+
+            sendRealAudioRef.current = false;
+            analyzeImage(transcript);
+          }
+        } catch (error) {
+          console.error('Voice message handling error:', error);
+        }
+      };
+
+      socket.onerror = (error) => {
+        console.error('Voice WebSocket error:', error);
+      };
+
+      socket.onclose = () => {
+        if (voiceSocketRef.current === socket) {
+          voiceSocketRef.current = null;
+          metaReadyRef.current = false;
+          sendRealAudioRef.current = false;
+        }
+
+        console.log('Voice session closed.');
+      };
+    } catch (error) {
+      console.error('Could not start voice session:', error);
+      Alert.alert('Voice connection error', 'Could not start the microphone session.');
+    }
+  }, [stream]);
 
   const stopSpeaking = () => {
+    sendRealAudioRef.current = false;
     Speech.stop();
-    setSpeaking(false);
   };
 
-  const speakResult = (message: string) => {
+  const restoreMicrophone = async (onFinished?: () => void) => {
+    if (!speechRestoreRef.current) return;
+
+    speechRestoreRef.current = false;
+
+    try {
+      const socket = voiceSocketRef.current;
+      const sessionIsOpen =
+        metaReadyRef.current && socket?.readyState === WebSocket.OPEN;
+
+      if (sessionIsOpen) {
+        await setAudioModeAsync({
+          allowsRecording: true,
+          playsInSilentMode: true,
+        });
+
+        await stream.start();
+
+        if (!analyzingRef.current) {
+          sendRealAudioRef.current = true;
+        }
+      }
+
+      setSpeaking(false);
+      onFinished?.();
+
+      console.log('OpenEyes microphone restored.');
+    } catch (error) {
+      console.error('Error restoring microphone:', error);
+      setSpeaking(false);
+      onFinished?.();
+    }
+  };
+
+  const speakResult = async (
+    message: string,
+    onFinished?: () => void
+  ) => {
+    sendRealAudioRef.current = false;
+
+    // Prevent an old speech callback from restoring the microphone.
+    speechRestoreRef.current = false;
     Speech.stop();
 
-    setSpeaking(true);
+    try {
+      stream.stop();
+      speechRestoreRef.current = true;
 
-    Speech.speak(message, {
-      language: 'en-US',
-      rate: 0.95,
-      pitch: 1.0,
-      onDone: () => setSpeaking(false),
-      onStopped: () => setSpeaking(false),
-      onError: () => setSpeaking(false),
-    });
+      await setAudioModeAsync({
+        allowsRecording: false,
+        playsInSilentMode: true,
+      });
+
+      setSpeaking(true);
+
+      Speech.speak(message, {
+        language: 'en-US',
+        rate: 0.95,
+        pitch: 1.0,
+        volume: 1.0,
+        onDone: () => {
+          void restoreMicrophone(onFinished);
+        },
+        onStopped: () => {
+          void restoreMicrophone(onFinished);
+        },
+        onError: (error) => {
+          console.error('Speech playback error:', error);
+          void restoreMicrophone(onFinished);
+        },
+      });
+    } catch (error) {
+      console.error('Could not start speech playback:', error);
+      await restoreMicrophone(onFinished);
+    }
   };
 
   // Stop any ongoing speech when leaving the camera screen
   useEffect(() => {
+    if (!cameraReady) {
+      return;
+    }
+
+    startVoiceSession();
+
     return () => {
+      metaReadyRef.current = false;
+      sendRealAudioRef.current = false;
+
+      stream.stop();
+
+      const socket = voiceSocketRef.current;
+
+      if (socket) {
+        socket.close();
+        voiceSocketRef.current = null;
+      }
+
+      speechRestoreRef.current = false;
+
       Speech.stop();
     };
-  }, []);
+  }, [cameraReady, startVoiceSession, stream]);
 
-  const analyzeImage = async () => {
-    if (!cameraRef.current || !cameraReady || analyzing) return;
+  const analyzeImage = async (voiceRequest?: string) => {
+    console.log('Starting image analysis...');
+    console.log('Camera ready:', cameraReady);
+    console.log('Camera ref available:', !!cameraRef.current);
+    console.log('Already analyzing:', analyzingRef.current);
+
+    if (
+      !cameraRef.current ||
+      !cameraReadyRef.current ||
+      analyzingRef.current
+    ) {
+      console.log('Image analysis stopped by initial safety check.');
+      return;
+    }
+
+    console.log('Image analysis safety check passed.');
+
+    analyzingRef.current = true;
+
+    sendRealAudioRef.current = false;
 
     const totalStartedAt = Date.now();
+
+    const oldSocket = voiceSocketRef.current;
+    voiceSocketRef.current = null;
+    metaReadyRef.current = false;
+
+    if (oldSocket) {
+      oldSocket.close();
+    }
+
+    stream.stop();
 
     try {
       stopSpeaking();
@@ -148,7 +424,7 @@ export default function CameraScreen() {
       setResult('OpenEyes is looking for your object...');
 
       const userRequest =
-        prompt.trim() || 'Help me find my keys.';
+        voiceRequest?.trim() || prompt.trim() || 'Help me find my keys.';
 
       const accessibilityPrompt = `
         You are OpenEyes, a careful visual assistant designed to help blind
@@ -260,17 +536,27 @@ export default function CameraScreen() {
 
       setResult(message);
 
-      // Read the AI response aloud
-      speakResult(message);
+      // Read the AI response aloud, then resume listening
+      speakResult(message, () => {
+        void startVoiceSession();
+      });
     } catch (error) {
       console.error('OpenEyes image analysis error:', error);
       setResult('');
 
-      Alert.alert(
-        'Unable to analyse image',
-        error instanceof Error ? error.message : 'Please try again.'
+      const errorMessage =
+        error instanceof Error
+          ? error.message
+          : 'Something went wrong while analysing the image.';
+
+      speakResult(
+        `Sorry, I couldn't analyse that image. ${errorMessage}`,
+        () => {
+          void startVoiceSession();
+        }
       );
     } finally {
+      analyzingRef.current = false;
       setAnalyzing(false);
     }
   };
@@ -345,7 +631,10 @@ export default function CameraScreen() {
           ref={cameraRef}
           style={StyleSheet.absoluteFill}
           facing="back"
-          onCameraReady={() => setCameraReady(true)}
+          onCameraReady={() => {
+            cameraReadyRef.current = true;
+            setCameraReady(true);
+          }}
         />
 
         {!cameraReady && (
@@ -382,7 +671,7 @@ export default function CameraScreen() {
             styles.button,
             (!cameraReady || analyzing) && styles.disabledButton,
           ]}
-          onPress={analyzeImage}
+          onPress={() => analyzeImage()}
           disabled={!cameraReady || analyzing}
           accessibilityRole="button"
           accessibilityLabel="Capture photo and find the requested object"

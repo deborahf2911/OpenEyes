@@ -104,6 +104,15 @@ export default function HomeScreen() {
           </Text>
         </Pressable>
 
+        <Pressable
+          style={styles.micTestButton}
+          onPress={() => router.push('/mic-test')}
+          accessibilityRole="button"
+          accessibilityLabel="Microphone test"
+        >
+          <Text style={styles.micTestText}>🎙 Microphone Test (Development)</Text>
+        </Pressable>
+
         <View
           style={styles.statusCard}
           accessible
@@ -310,5 +319,18 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 1,
     textAlign: 'center',
+  },
+  micTestButton: {
+    padding: 15,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#087E8B',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  micTestText: {
+    color: '#087E8B',
+    fontSize: 14,
+    fontWeight: '700',
   },
 });

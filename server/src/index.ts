@@ -6,7 +6,9 @@ import {
 import cors from "cors";
 import "dotenv/config";
 import express from "express";
+import { createServer } from "node:http";
 import OpenAI from "openai";
+import WebSocket, { WebSocketServer } from "ws";
 
 const app = express();
 const PORT = 3000;
@@ -563,6 +565,308 @@ adjustment. Never instruct the user to walk, climb, or reach.
   }
 });
 
-app.listen(PORT, "0.0.0.0", () => {
+const server = createServer(app);
+
+const voiceServer = new WebSocketServer({ noServer: true });
+
+server.on("upgrade", (request, socket, head) => {
+  const pathname = new URL(
+    request.url ?? "/",
+    `http://${request.headers.host}`
+  ).pathname;
+
+  if (pathname !== "/api/voice") {
+    socket.destroy();
+    return;
+  }
+
+  voiceServer.handleUpgrade(request, socket, head, (webSocket) => {
+    voiceServer.emit("connection", webSocket, request);
+  });
+});
+
+voiceServer.on("connection", (mobileSocket) => {
+  console.log("Mobile voice connection received.");
+
+  if (!apiKey) {
+    mobileSocket.close(1011, "Meta API key is not configured.");
+    return;
+  }
+
+  const metaSocket = new WebSocket(
+    "wss://api.meta.ai/v1/asr/realtime"
+  );
+
+  let handshakeComplete = false;
+
+  let audioQueue: Buffer[] = [];
+  let queuedAudioBytes = 0;
+  let audioPacingTimer: NodeJS.Timeout | null = null;
+  let lastForwardAt: number | null = null;
+
+  const AUDIO_FRAME_INTERVAL_MS = 90;
+  const MAX_QUEUED_AUDIO_BYTES = 48000 * 3;
+
+  audioPacingTimer = setInterval(() => {
+    if (
+      !handshakeComplete ||
+      metaSocket.readyState !== WebSocket.OPEN ||
+      audioQueue.length === 0
+    ) {
+      return;
+    }
+
+    const audioData = audioQueue.shift()!;
+
+    const now = Date.now();
+    const forwardInterval =
+      lastForwardAt === null ? null : now - lastForwardAt;
+
+    lastForwardAt = now;
+
+    if (forwardedAudioFrames % 10 === 0) {
+      console.log("Meta send timing:", {
+        frameBytes: audioData.byteLength,
+        intervalMs: forwardInterval,
+        queuedFrames: audioQueue.length,
+        metaBufferedAmount: metaSocket.bufferedAmount,
+      });
+    }
+
+    queuedAudioBytes -= audioData.byteLength;
+
+    metaSocket.send(audioData, (error) => {
+      if (error) {
+        console.error("Audio forwarding failed:", error);
+        return;
+      }
+
+      forwardedAudioFrames++;
+      forwardedAudioBytes += audioData.byteLength;
+    });
+  }, AUDIO_FRAME_INTERVAL_MS);
+
+  metaSocket.on("open", () => {
+    console.log("Connected to Meta voice service.");
+
+    metaSocket.send(
+      JSON.stringify({
+        authorization: {
+          accessToken: `Bearer ${apiKey}`,
+        },
+        audioEncoding: "PCM_24KHZ",
+        model: "muse-voice-transcribe-1.0",
+        mode: "ENDPOINTING",
+        partialMode: "CUMULATIVE",
+        emitAudioProgress: false,
+      })
+    );
+  });
+
+  metaSocket.on("message", (data, isBinary) => {
+    if (isBinary) {
+      return;
+    }
+
+    try {
+      const event = JSON.parse(data.toString());
+
+      // Meta's initial acknowledgement has a sessionId
+      // and does not contain a type field.
+      if (!handshakeComplete && event.sessionId) {
+        handshakeComplete = true;
+
+        console.log(
+          `Meta voice session ready: ${event.sessionId}`
+        );
+
+        if (mobileSocket.readyState === WebSocket.OPEN) {
+          mobileSocket.send(
+            JSON.stringify({
+              type: "ready",
+              sessionId: event.sessionId,
+            })
+          );
+        }
+
+        return;
+      }
+
+      if (event.type === "error") {
+        console.error("Meta voice error:", event);
+
+        if (mobileSocket.readyState === WebSocket.OPEN) {
+          mobileSocket.send(JSON.stringify(event));
+        }
+
+        return;
+      }
+
+      // Forward transcripts and speech events to the iPhone.
+      if (mobileSocket.readyState === WebSocket.OPEN) {
+        mobileSocket.send(JSON.stringify(event));
+      }
+
+      if (event.type === "speechComplete") {
+        console.log(
+          `Completed voice instruction: ${event.transcript}`
+        );
+      }
+    } catch (error) {
+      console.error("Could not process Meta voice event:", error);
+    }
+  });
+
+  mobileSocket.on("message", (data, isBinary) => {
+    if (isBinary) {
+      const now = Date.now();
+
+      const audioData = Array.isArray(data)
+        ? Buffer.concat(data)
+        : Buffer.isBuffer(data)
+          ? data
+          : Buffer.from(data as ArrayBuffer);
+
+      receivedAudioFrames++;
+      receivedAudioBytes += audioData.byteLength;
+
+      const interval = lastAudioFrameAt === null
+        ? null
+        : now - lastAudioFrameAt;
+
+      lastAudioFrameAt = now;
+
+      if (firstAudioFrameAt === null) {
+        firstAudioFrameAt = now;
+      }
+
+      let queued = false;
+
+      if (
+        metaSocket.readyState === WebSocket.OPEN &&
+        handshakeComplete &&
+        queuedAudioBytes + audioData.byteLength <= MAX_QUEUED_AUDIO_BYTES
+      ) {
+        audioQueue.push(audioData);
+        queuedAudioBytes += audioData.byteLength;
+        queued = true;
+      }
+
+      if (
+        queuedAudioBytes + audioData.byteLength > MAX_QUEUED_AUDIO_BYTES
+      ) {
+        console.warn("Audio queue limit reached. Dropping incoming frame.");
+      }
+
+      if (receivedAudioFrames % 10 === 0) {
+        const elapsedSeconds =
+          (now - firstAudioFrameAt) / 1000;
+
+        console.log("Audio pacing diagnostics:", {
+          receivedFrames: receivedAudioFrames,
+          receivedKB: Number(
+            (receivedAudioBytes / 1024).toFixed(2)
+          ),
+          forwardedFrames: forwardedAudioFrames,
+          forwardedKB: Number(
+            (forwardedAudioBytes / 1024).toFixed(2)
+          ),
+          queuedFrames: audioQueue.length,
+          queuedKB: Number(
+            (queuedAudioBytes / 1024).toFixed(2)
+          ),
+          lastFrameIntervalMs: interval,
+          receivedBytesPerSecond: elapsedSeconds > 0
+            ? Math.round(receivedAudioBytes / elapsedSeconds)
+            : 0,
+          forwardedBytesPerSecond: elapsedSeconds > 0
+            ? Math.round(forwardedAudioBytes / elapsedSeconds)
+            : 0,
+          metaBufferedAmount: metaSocket.bufferedAmount,
+          currentFrameQueued: queued,
+        });
+      }
+
+      return;
+    }
+
+    if (
+      metaSocket.readyState !== WebSocket.OPEN ||
+      !handshakeComplete
+    ) {
+      return;
+    }
+
+    try {
+      const message = JSON.parse(data.toString());
+
+      if (message.type === "endStream") {
+        metaSocket.send(JSON.stringify(message));
+      }
+    } catch {
+      console.warn("Received an invalid voice control message.");
+    }
+  });
+
+  metaSocket.on("error", (error) => {
+    console.error("Meta voice connection failed:", error);
+
+    if (mobileSocket.readyState === WebSocket.OPEN) {
+      mobileSocket.send(
+        JSON.stringify({
+          type: "error",
+          message: "Could not connect to Meta voice transcription.",
+        })
+      );
+    }
+  });
+
+  // Temporary audio diagnostics.
+  let receivedAudioFrames = 0;
+  let receivedAudioBytes = 0;
+  let forwardedAudioFrames = 0;
+  let forwardedAudioBytes = 0;
+  let lastAudioFrameAt: number | null = null;
+  let firstAudioFrameAt: number | null = null;
+
+  mobileSocket.on("close", () => {
+    console.log("Mobile voice connection closed.");
+
+    if (audioPacingTimer) {
+      clearInterval(audioPacingTimer);
+      audioPacingTimer = null;
+    }
+
+    audioQueue = [];
+    queuedAudioBytes = 0;
+
+    if (
+      metaSocket.readyState === WebSocket.OPEN ||
+      metaSocket.readyState === WebSocket.CONNECTING
+    ) {
+      metaSocket.close();
+    }
+  });
+
+  metaSocket.on("close", (code, reason) => {
+    console.log(
+      `Meta voice connection closed: ${code} ${reason.toString()}`
+    );
+
+    if (audioPacingTimer) {
+      clearInterval(audioPacingTimer);
+      audioPacingTimer = null;
+    }
+
+    audioQueue = [];
+    queuedAudioBytes = 0;
+
+    if (mobileSocket.readyState === WebSocket.OPEN) {
+      mobileSocket.close(code === 1000 ? 1000 : 1011);
+    }
+  });
+});
+
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`OpenEyes backend running at http://localhost:${PORT}`);
 });

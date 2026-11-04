@@ -1,56 +1,121 @@
-# Welcome to your Expo app 👋
+# OpenEyes 👁️
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+### A Voice-First AI Accessibility Assistant
 
-## Get started
+OpenEyes is a voice-first accessibility application designed primarily for people who are blind or have low vision. It helps users find everyday objects and understand their surroundings through natural voice interaction and AI-powered visual understanding.
 
-1. Install dependencies
+Instead of relying on visual navigation, users can simply speak to OpenEyes, ask what they are looking for, and receive spoken descriptions based on what the camera can see.
 
-   ```bash
-   npm install
-   ```
+## 🎥 Demo
 
-2. Start the app
+[Watch the OpenEyes Demo](https://youtube.com/shorts/AHopyU6knU8)
 
-   ```bash
-   npx expo start
-   ```
+## ✨ Features
 
-In the output, you'll find options to open the app in a
+- **Voice Interaction:** Give instructions naturally using spoken commands.
+- **Object Finding:** Ask OpenEyes to help locate everyday objects, such as phones and keys.
+- **Visual Understanding:** Use the camera to analyse surroundings and identify visible objects.
+- **Spoken Responses:** Receive natural-language descriptions through text-to-speech.
+- **Accessibility-Focused Design:** Designed around voice-first interaction for people with visual impairments.
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+## 🛠️ Technology Stack
 
-You can start developing by editing the files inside the **src/app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+**Mobile Application**
+- React Native
+- Expo
+- TypeScript
+- Expo Router
+- Expo Camera
+- Expo Audio
+- Expo Speech
 
-## Get a fresh project
+**Backend**
+- Node.js
+- TypeScript
+- WebSockets
+- REST API
 
-When you're ready, run:
+**AI**
+- Meta Model API
+- Meta real-time voice capabilities
+- AI-powered image understanding
+
+## 🧠 How It Works
+
+1. The user opens OpenEyes and gives a spoken instruction.
+2. The application receives the voice instruction through its real-time voice connection.
+3. The user captures an image using the camera.
+4. The backend sends the image for AI-powered analysis.
+5. Meta's AI model interprets the scene and identifies the requested object when visible.
+6. OpenEyes communicates the result through a spoken response.
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- Node.js and npm
+- Expo Go or a compatible Expo development environment
+- A Meta Model API account with the required API access
+
+### Installation
+
+Clone the repository:
 
 ```bash
-npm run reset-project
+git clone https://github.com/deborahf2911/OpenEyes.git
+cd OpenEyes
 ```
 
-This command will move the starter code to the **example** directory and create a blank **src/app** directory where you can start developing.
+Install the mobile application dependencies:
 
-### Other setup steps
+```bash
+npm install
+```
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+Install the backend dependencies:
 
-## Learn more
+```bash
+cd server
+npm install
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+### Backend Configuration
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+Configure the required Meta API credentials in the backend environment file. Keep your credentials private and never commit your `.env` file.
 
-## Join the community
+Start the backend:
 
-Join our community of developers creating universal apps.
+```bash
+npm run dev
+```
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+The backend runs on port 3000 by default.
+
+### Mobile Application
+
+In `src/app/camera.tsx`, configure the API and WebSocket URLs to use the network address of the computer running the backend.
+
+Return to the project root and start Expo:
+
+```bash
+cd ..
+npx expo start
+```
+
+Open the application using Expo Go on a compatible mobile device.
+
+Make sure the mobile device and backend can communicate over the network.
+
+## ♿ Accessibility and Safety
+
+OpenEyes aims to make everyday interactions with the surrounding environment more accessible.
+
+It is designed to avoid inventing visual details, communicate uncertainty when an object cannot be identified, and provide descriptions using relevant physical landmarks.
+
+OpenEyes is an assistive tool and should not be treated as a replacement for a mobility aid, orientation and mobility training, or other established accessibility tools.
+
+## 👩‍💻 Developer
+
+**Deborah Fernando**
+
+Built independently for the **Meta Global AI Developer Hackathon 2026**.
